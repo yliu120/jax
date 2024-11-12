@@ -27,7 +27,7 @@ from jax._src.lib import xla_extension
 logger = logging.getLogger(__name__)
 
 
-_AUTO_DETECT_CLUSTER_ENV = config.bool_flag(
+_CHECK_PROXY_ENVS = config.bool_flag(
     name="jax_check_proxy_envs",
     default=True,
     help="Checks proxy vars in user envs and emit warnings.",
@@ -102,8 +102,9 @@ class State:
     self.process_id = process_id
 
     proxy_vars = []
-    if _AUTO_DETECT_CLUSTER_ENV.value:
-      proxy_vars = [key for key in os.environ.keys() if '_proxy' in key.lower()]
+    if _CHECK_PROXY_ENVS.value:
+      proxy_vars = [key for key in os.environ.keys()
+                    if '_proxy' in key.lower()]
 
     if len(proxy_vars) > 0:
       vars = " ".join(proxy_vars) + ". "
