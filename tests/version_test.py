@@ -126,7 +126,7 @@ class JaxVersionTest(unittest.TestCase):
       self.assertValidVersion(version)
 
     with jtu.set_env(JAX_RELEASE=None, JAXLIB_RELEASE=None,
-                      JAX_NIGHTLY=None, JAXLIB_NIGHTLY="1"):
+                     JAX_NIGHTLY=None, JAXLIB_NIGHTLY="1"):
       with assert_no_subprocess_call():
         version = jax.version._get_version_for_build()
       datestring = datetime.date.today().strftime("%Y%m%d")
@@ -134,17 +134,26 @@ class JaxVersionTest(unittest.TestCase):
       self.assertValidVersion(version)
 
     with jtu.set_env(JAX_RELEASE="1", JAXLIB_RELEASE=None,
-                      JAX_NIGHTLY=None, JAXLIB_NIGHTLY=None):
+                     JAX_NIGHTLY=None, JAXLIB_NIGHTLY=None):
       with assert_no_subprocess_call():
         version = jax.version._get_version_for_build()
       self.assertEqual(version, base_version)
       self.assertValidVersion(version)
 
     with jtu.set_env(JAX_RELEASE=None, JAXLIB_RELEASE="1",
-                      JAX_NIGHTLY=None, JAXLIB_NIGHTLY=None):
+                     JAX_NIGHTLY=None, JAXLIB_NIGHTLY=None):
       with assert_no_subprocess_call():
         version = jax.version._get_version_for_build()
       self.assertEqual(version, base_version)
+      self.assertValidVersion(version)
+
+    with jtu.set_env(JAX_RELEASE=None, JAXLIB_RELEASE=None,
+                     JAX_NIGHTLY=None, JAXLIB_NIGHTLY=None,
+                     JAX_CUSTOM_VERSION_SUFFIX="test"):
+      with assert_subprocess_call():
+        version = jax.version._get_version_for_build()
+      self.assertTrue(version.startswith(f"{base_version}.dev"))
+      self.assertTrue(version.endswith("test"))
       self.assertValidVersion(version)
 
   def testVersions(self):
