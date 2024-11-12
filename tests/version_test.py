@@ -30,7 +30,7 @@ VERSION_PATTERN = re.compile(r"""
   (?P<version>[0-9]+\.[0-9]+\.[0-9]+) # main version; like '0.4.16'
   (?:\.dev(?P<dev>[0-9]+))?           # optional dev version; like '.dev20230908'
   (?:\+(?P<local>[a-zA-Z0-9_]+))?     # optional local version; like '+g6643af3c3'
-  (?:\+(?P<suffix>[a-zA-Z0-9_]+))?    # optional custom suffix; like 'test'
+  (?:\.(?P<suffix>[a-zA-Z0-9_]+))?    # optional custom suffix; like 'test'
   $                                   # end of string
 """, re.VERBOSE)
 
