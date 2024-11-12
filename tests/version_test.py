@@ -30,6 +30,7 @@ VERSION_PATTERN = re.compile(r"""
   (?P<version>[0-9]+\.[0-9]+\.[0-9]+) # main version; like '0.4.16'
   (?:\.dev(?P<dev>[0-9]+))?           # optional dev version; like '.dev20230908'
   (?:\+(?P<local>[a-zA-Z0-9_]+))?     # optional local version; like '+g6643af3c3'
+  (?:\+(?P<suffix>[a-zA-Z0-9_]+))?    # optional custom suffix; like 'test'
   $                                   # end of string
 """, re.VERBOSE)
 
@@ -61,11 +62,12 @@ def assert_no_subprocess_call():
 
 
 @contextlib.contextmanager
-def assert_subprocess_call():
+def assert_subprocess_call(stdout: bytes | None = None):
   """Run code, asserting that subprocess.Popen *is* called at least once."""
   with mock.patch("subprocess.Popen") as mock_Popen:
+    mock_Popen.return_value.communicate.return_value = (stdout, b"")
     yield
-  mock_Popen.assert_called()
+  mock_Popen.return_value.communicate.assert_called()
 
 
 class JaxVersionTest(unittest.TestCase):
@@ -150,7 +152,7 @@ class JaxVersionTest(unittest.TestCase):
     with jtu.set_env(JAX_RELEASE=None, JAXLIB_RELEASE=None,
                      JAX_NIGHTLY=None, JAXLIB_NIGHTLY=None,
                      JAX_CUSTOM_VERSION_SUFFIX="test"):
-      with assert_subprocess_call():
+      with assert_subprocess_call(stdout=b"1731433958-1c0f1076e"):
         version = jax.version._get_version_for_build()
       self.assertTrue(version.startswith(f"{base_version}.dev"))
       self.assertTrue(version.endswith("test"))
