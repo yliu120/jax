@@ -1749,7 +1749,6 @@ batching.skippable_batchers[pgather_p] = partial(_names_in_param, 'axes')
 def _psend_recv_lowering(ctx, x, *, axis_name, perm, call_target_name):
   # TODO(yunlongl): Merges these logic with _ppermute_lowering.
   replica_groups = _replica_groups(ctx.module_context.axis_env, axis_name, None)
-  print(replica_groups)
   group_size = len(replica_groups[0])
   srcs, dsts = unzip2((src % group_size, dst % group_size) for src, dst in perm)
   if not (len(srcs) == len(set(srcs)) and len(dsts) == len(set(dsts))):
