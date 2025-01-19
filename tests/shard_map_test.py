@@ -2498,6 +2498,63 @@ class ShardMapTest(jtu.JaxTestCase):
               )(x)  # don't crash
     self.assertArraysEqual(y, np.array([6, 7], dtype=np.float32))
 
+  def test_psend_precv(self):
+    mesh = jtu.create_mesh((4,), ('i',))
+    x = jnp.arange(8., dtype=np.float32)
+
+    def f(x):
+      # Devices 0 and 2 are sending, devices 1 and 3 are receiving.
+      y = jax.lax.psend(x, 'i', perm=((0, 1), (2, 3)))
+      # y = x as the semantics is that we return the sent data.
+      # For those not sending, we return the input so that we treat
+      # send as an identity.
+      z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
+      # For those not receiving, we return the input as what an
+      # identity function would do.
+      # z = (0, 1, 0, 1, 4, 5, 4, 5) because only shard 0 and 2
+      # are right shifted.
+      return z
+
+    s = NamedSharding(mesh, P("i"))
+    y = jax.jit(
+      shard_map(f, mesh=mesh, in_specs=P("i"), out_specs=P("i")),
+      in_shardings=s,
+      out_shardings=s,
+    ).lower(x).compile()  # Don't crash
+    print(y.as_text())
+    self.assertArraysEqual(y(x),
+        np.array([0., 1., 0., 1., 4., 5., 4., 5.], dtype=np.float32))
+
+  def test_psend_precv_partial_auto(self):
+    mesh = jtu.create_mesh((4, 2), ("i", "j"))
+    x = jnp.arange(8., dtype=np.float32).reshape(4, 2)
+
+    def f(x):
+      # Devices 0 and 2 are sending, devices 1 and 3 are receiving.
+      x = jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(None, "j")))
+      y = jax.lax.psend(x, "i", perm=((0, 1), (2, 3)))
+      # y = x as the semantics is that we return the sent data.
+      # For those not sending, we return the input so that we treat
+      # send as an identity.
+      z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
+      # For those not receiving, we return the input as what an
+      # identity function would do.
+      # z = (0, 1, 0, 1, 4, 5, 4, 5) because only shard 0 and 2
+      # are right shifted.
+      return z
+
+    s = NamedSharding(mesh, P("i", "j"))
+    y = jax.jit(
+        shard_map(f, mesh=mesh, in_specs=P("i"), out_specs=P("i"),
+            auto=frozenset({"j"})),
+        in_shardings=s,
+        out_shardings=s,
+      ).lower(x).compile()  # Don't crash
+    print(y.as_text())
+    self.assertArraysEqual(y(x),
+        np.array([0., 1., 0., 1., 4., 5., 4., 5.],
+            dtype=np.float32).reshape(4, 2))
+
 
 class FunSpec(NamedTuple):
   name: str

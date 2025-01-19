@@ -1215,6 +1215,8 @@ register_standard_collective(lax_parallel.all_gather_p)
 register_standard_collective(lax_parallel.all_to_all_p)
 register_standard_collective(lax_parallel.ppermute_p)
 register_standard_collective(lax_parallel.reduce_scatter_p)
+register_standard_collective(lax_parallel.psend_p)
+register_standard_collective(lax_parallel.precv_p)
 register_reduction_collective(lax_parallel.pmin_p)
 register_reduction_collective(lax_parallel.pmax_p)
 
