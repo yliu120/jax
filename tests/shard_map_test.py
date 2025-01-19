@@ -2531,8 +2531,7 @@ class ShardMapTest(jtu.JaxTestCase):
       shard_map(f, mesh=mesh, in_specs=P("i"), out_specs=P("i")),
       in_shardings=s,
       out_shardings=s,
-    ).lower(x)
-    print(y.as_text())
+    ).lower(x).compile()  # Don't crash
     # self.assertArraysEqual(y, x)
 
 
