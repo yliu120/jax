@@ -1744,3 +1744,63 @@ mlir.register_lowering(pgather_p, _pgather_parallel_lowering)
 # TODO: Transpose? That requires adding pscatter...
 batching.fancy_primitive_batchers[pgather_p] = _pgather_collective_batcher
 batching.skippable_batchers[pgather_p] = partial(_names_in_param, 'axes')
+
+
+def _psend_recv_lowering(ctx, x, *, axis_name, perm, call_target_name):
+  # TODO(yunlongl): Merges these logic with _ppermute_lowering.
+  replica_groups = _replica_groups(ctx.module_context.axis_env, axis_name, None)
+  print(replica_groups)
+  group_size = len(replica_groups[0])
+  srcs, dsts = unzip2((src % group_size, dst % group_size) for src, dst in perm)
+  if not (len(srcs) == len(set(srcs)) and len(dsts) == len(set(dsts))):
+    msg = "psend/precv sources and destinations must be unique, got {}."
+    raise ValueError(msg.format(perm))
+
+  full_perm = np.zeros((len(replica_groups), len(perm), 2), np.int64)
+  for i, grp in enumerate(replica_groups):
+    grp = sorted(grp)
+    for j, (src, dst) in enumerate(perm):
+      full_perm[i, j, 0] = grp[src]
+      full_perm[i, j, 1] = grp[dst]
+  full_perm = full_perm.reshape((-1, 2))
+
+  backend_config = ir.DictAttr.get({
+      'perm': ir.DenseIntElementsAttr.get(full_perm, shape=full_perm.shape),
+  })
+  return hlo.CustomCallOp(
+    result=[x.type],
+    inputs=[x],
+    call_target_name=ir.StringAttr.get(call_target_name),
+    backend_config=backend_config,
+    api_version=ir.IntegerAttr.get(ir.IntegerType.get_signless(32), 4),
+  ).results
+
+
+def psend(x, axis_name, perm):
+  if not isinstance(axis_name, (list, tuple)):
+    axis_name = (axis_name,)
+  return tree_util.tree_map(
+    partial(psend_p.bind, axis_name=axis_name, perm=tuple(map(tuple, perm))), x
+  )
+
+
+def precv(x, axis_name, perm):
+  if not isinstance(axis_name, (list, tuple)):
+    axis_name = (axis_name,)
+  return tree_util.tree_map(
+    partial(precv_p.bind, axis_name=axis_name, perm=tuple(map(tuple, perm))), x
+  )
+
+
+psend_p = core.Primitive("send")
+psend_p.def_abstract_eval(_raise_to_shaped_abstract_eval)
+mlir.register_lowering(
+  psend_p, partial(_psend_recv_lowering, call_target_name="xla.gpu.send")
+)
+
+
+precv_p = core.Primitive("recv")
+precv_p.def_abstract_eval(_raise_to_shaped_abstract_eval)
+mlir.register_lowering(
+  precv_p, partial(_psend_recv_lowering, call_target_name="xla.gpu.recv")
+)

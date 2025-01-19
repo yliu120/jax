@@ -2517,6 +2517,24 @@ class ShardMapTest(jtu.JaxTestCase):
               )(x)  # don't crash
     self.assertArraysEqual(y, np.array([6, 7], dtype=np.float32))
 
+  def test_psend_precv(self):
+    mesh = jtu.create_mesh((4,), ('i',))
+    x = jnp.arange(8., dtype=np.float32)
+
+    def f(x):
+      y = jax.lax.psend(x, 'i', perm=((0, 1), (2, 3)))
+      z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
+      return z
+
+    s = NamedSharding(mesh, P("i"))
+    y = jax.jit(
+      shard_map(f, mesh=mesh, in_specs=P("i"), out_specs=P("i")),
+      in_shardings=s,
+      out_shardings=s,
+    ).lower(x)
+    print(y.as_text())
+    # self.assertArraysEqual(y, x)
+
 
 class FunSpec(NamedTuple):
   name: str

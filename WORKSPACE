@@ -1,6 +1,10 @@
 # The XLA commit is determined by third_party/xla/workspace.bzl.
-load("//third_party/xla:workspace.bzl", jax_xla_workspace = "repo")
-jax_xla_workspace()
+# load("//third_party/xla:workspace.bzl", jax_xla_workspace = "repo")
+# jax_xla_workspace()
+local_repository(
+    name = "xla",
+    path = "/data/yunlongl/workspace/xla",
+)
 
 # Initialize hermetic Python
 load("@xla//third_party/py:python_init_rules.bzl", "python_init_rules")
