@@ -2522,8 +2522,16 @@ class ShardMapTest(jtu.JaxTestCase):
     x = jnp.arange(8., dtype=np.float32)
 
     def f(x):
+      # Devices 0 and 2 are sending, devices 1 and 3 are receiving.
       y = jax.lax.psend(x, 'i', perm=((0, 1), (2, 3)))
+      # y = x as the semantics is that we return the sent data.
+      # For those not sending, we return the input so that we treat
+      # send as an identity.
       z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
+      # For those not receiving, we return the input as what an
+      # identity function would do.
+      # z = (0, 1, 0, 1, 4, 5, 4, 5) because only shard 0 and 2
+      # are right shifted.
       return z
 
     s = NamedSharding(mesh, P("i"))
@@ -2532,7 +2540,9 @@ class ShardMapTest(jtu.JaxTestCase):
       in_shardings=s,
       out_shardings=s,
     ).lower(x).compile()  # Don't crash
-    # self.assertArraysEqual(y, x)
+    print(y.as_text())
+    self.assertArraysEqual(y(x),
+        np.array([0., 1., 0., 1., 4., 5., 4., 5.], dtype=np.float32))
 
 
 class FunSpec(NamedTuple):
