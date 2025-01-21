@@ -1815,11 +1815,18 @@ def precv(x, axis_name, perm):
   )
 
 
+def _psend_recv_transpose_rule(t, x, perm, axis_name, op=None):
+  srcs, dsts = unzip2(perm)
+  inverse_perm = list(zip(dsts, srcs))
+  return [op(t, axis_name=axis_name, perm=inverse_perm)]
+
+
 psend_p = core.Primitive("send")
 psend_p.def_abstract_eval(_raise_to_shaped_abstract_eval)
 mlir.register_lowering(
   psend_p, partial(_psend_recv_lowering, call_target_name="xla.gpu.send")
 )
+ad.deflinear2(psend_p, partial(_psend_recv_transpose_rule, op=precv))
 
 
 precv_p = core.Primitive("recv")
@@ -1827,3 +1834,4 @@ precv_p.def_abstract_eval(_raise_to_shaped_abstract_eval)
 mlir.register_lowering(
   precv_p, partial(_psend_recv_lowering, call_target_name="xla.gpu.recv")
 )
+ad.deflinear2(precv_p, partial(_psend_recv_transpose_rule, op=psend))

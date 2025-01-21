@@ -2503,16 +2503,9 @@ class ShardMapTest(jtu.JaxTestCase):
     x = jnp.arange(8., dtype=np.float32)
 
     def f(x):
-      # Devices 0 and 2 are sending, devices 1 and 3 are receiving.
+      # This should have equivalent semantics to ppermute.
       y = jax.lax.psend(x, 'i', perm=((0, 1), (2, 3)))
-      # y = x as the semantics is that we return the sent data.
-      # For those not sending, we return the input so that we treat
-      # send as an identity.
       z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
-      # For those not receiving, we return the input as what an
-      # identity function would do.
-      # z = (0, 1, 0, 1, 4, 5, 4, 5) because only shard 0 and 2
-      # are right shifted.
       return z
 
     s = NamedSharding(mesh, P("i"))
@@ -2523,24 +2516,36 @@ class ShardMapTest(jtu.JaxTestCase):
     ).lower(x).compile()  # Don't crash
     print(y.as_text())
     self.assertArraysEqual(y(x),
-        np.array([0., 1., 0., 1., 4., 5., 4., 5.], dtype=np.float32))
+        np.array([0., 0., 0., 1., 0., 0., 4., 5.], dtype=np.float32))
+
+  def test_psend_precv_autodiff(self):
+    mesh = jtu.create_mesh((4,), ('i',))
+    x = jnp.arange(8., dtype=np.float32)
+
+    def f(x):
+      y = jax.lax.psend(x, "i", perm=((0, 1), (2, 3)))
+      z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
+      return z + x
+
+    def g(x):
+      x = shard_map(f, mesh=mesh, in_specs=P("i"), out_specs=P("i"))(x)
+      return jnp.sum(x)
+
+    s = NamedSharding(mesh, P("i"))
+    print(jax.make_jaxpr(jax.grad(g))(x))
+    y = jax.jit(jax.grad(g), in_shardings=s, out_shardings=s).lower(x).compile()
+    print(y.as_text())
+    self.assertArraysEqual(y(x),
+        np.array([2., 2., 1., 1., 2., 2., 1., 1.], dtype=np.float32))
 
   def test_psend_precv_partial_auto(self):
     mesh = jtu.create_mesh((4, 2), ("i", "j"))
     x = jnp.arange(8., dtype=np.float32).reshape(4, 2)
 
     def f(x):
-      # Devices 0 and 2 are sending, devices 1 and 3 are receiving.
       x = jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(None, "j")))
       y = jax.lax.psend(x, "i", perm=((0, 1), (2, 3)))
-      # y = x as the semantics is that we return the sent data.
-      # For those not sending, we return the input so that we treat
-      # send as an identity.
       z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
-      # For those not receiving, we return the input as what an
-      # identity function would do.
-      # z = (0, 1, 0, 1, 4, 5, 4, 5) because only shard 0 and 2
-      # are right shifted.
       return z
 
     s = NamedSharding(mesh, P("i", "j"))
@@ -2552,7 +2557,7 @@ class ShardMapTest(jtu.JaxTestCase):
       ).lower(x).compile()  # Don't crash
     print(y.as_text())
     self.assertArraysEqual(y(x),
-        np.array([0., 1., 0., 1., 4., 5., 4., 5.],
+        np.array([0., 0., 0., 1., 0., 0., 4., 5.],
             dtype=np.float32).reshape(4, 2))
 
 
