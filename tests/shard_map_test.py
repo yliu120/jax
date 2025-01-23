@@ -2504,7 +2504,7 @@ class ShardMapTest(jtu.JaxTestCase):
 
     def f(x):
       # This should have equivalent semantics to ppermute.
-      y = jax.lax.psend(x, 'i', perm=((0, 1), (2, 3)))
+      y = jax.lax.psend(x, None, 'i', perm=((0, 1), (2, 3)))
       z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
       return z
 
@@ -2514,29 +2514,54 @@ class ShardMapTest(jtu.JaxTestCase):
       in_shardings=s,
       out_shardings=s,
     ).lower(x).compile()  # Don't crash
-    print(y.as_text())
     self.assertArraysEqual(y(x),
         np.array([0., 0., 0., 1., 0., 0., 4., 5.], dtype=np.float32))
 
-  def test_psend_precv_autodiff(self):
+  def test_psend_precv_ring_scan(self):
     mesh = jtu.create_mesh((4,), ('i',))
     x = jnp.arange(8., dtype=np.float32)
 
+    def f(x, _):
+      # This should have equivalent semantics to ppermute which rotates
+      # the array to the right.
+      sent = jax.lax.psend(x, None, axis_name="i", perm=((0, 1), (2, 3)))
+      recved = jax.lax.precv(sent, axis_name="i", perm=((0, 1), (2, 3)))
+      sent_2 = jax.lax.psend(x, recved, axis_name="i", perm=((1, 2), (3, 0)))
+      recved_2 = jax.lax.precv(sent_2, axis_name="i", perm=((1, 2), (3, 0)))
+      return recved + recved_2, None
+
+    def g(x):
+      return jax.lax.scan(f, x, length=4)[0]
+
+    s = NamedSharding(mesh, P("i"))
+    y = jax.jit(
+      shard_map(g, mesh=mesh, in_specs=P("i"), out_specs=P("i")),
+      in_shardings=s,
+      out_shardings=s,
+    ).lower(x).compile()  # Don't crash
+    self.assertArraysEqual(y(x),
+        np.array([0., 1., 2., 3., 4., 5., 6., 7.], dtype=np.float32))
+
+  def test_psend_precv_ring_autodiff(self):
+    mesh = jtu.create_mesh((4,), ("i",))
+    x = jnp.arange(8.0, dtype=np.float32)
+
     def f(x):
-      y = jax.lax.psend(x, "i", perm=((0, 1), (2, 3)))
-      z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
-      return z + x
+      sent = jax.lax.psend(x, None, axis_name="i", perm=((0, 1), (2, 3)))
+      recved = jax.lax.precv(sent, axis_name="i", perm=((0, 1), (2, 3)))
+      sent_2 = jax.lax.psend(x, recved, axis_name="i", perm=((1, 2), (3, 0)))
+      recved_2 = jax.lax.precv(sent_2, axis_name="i", perm=((1, 2), (3, 0)))
+      return recved + recved_2
 
     def g(x):
       x = shard_map(f, mesh=mesh, in_specs=P("i"), out_specs=P("i"))(x)
       return jnp.sum(x)
 
     s = NamedSharding(mesh, P("i"))
-    print(jax.make_jaxpr(jax.grad(g))(x))
-    y = jax.jit(jax.grad(g), in_shardings=s, out_shardings=s).lower(x).compile()
-    print(y.as_text())
-    self.assertArraysEqual(y(x),
-        np.array([2., 2., 1., 1., 2., 2., 1., 1.], dtype=np.float32))
+    lowered = jax.jit(jax.grad(g), in_shardings=s, out_shardings=s).lower(x)
+    compiled = lowered.compile()
+    self.assertArraysEqual(compiled(x),
+        np.array([1., 1., 1., 1., 1., 1., 1., 1.], dtype=np.float32))
 
   def test_psend_precv_partial_auto(self):
     mesh = jtu.create_mesh((4, 2), ("i", "j"))
@@ -2544,7 +2569,7 @@ class ShardMapTest(jtu.JaxTestCase):
 
     def f(x):
       x = jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(None, "j")))
-      y = jax.lax.psend(x, "i", perm=((0, 1), (2, 3)))
+      y = jax.lax.psend(x, None, "i", perm=((0, 1), (2, 3)))
       z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
       return z
 
@@ -2555,7 +2580,6 @@ class ShardMapTest(jtu.JaxTestCase):
         in_shardings=s,
         out_shardings=s,
       ).lower(x).compile()  # Don't crash
-    print(y.as_text())
     self.assertArraysEqual(y(x),
         np.array([0., 0., 0., 1., 0., 0., 4., 5.],
             dtype=np.float32).reshape(4, 2))
