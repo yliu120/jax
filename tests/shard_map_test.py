@@ -2518,6 +2518,27 @@ class ShardMapTest(jtu.JaxTestCase):
     self.assertArraysEqual(y(x),
         np.array([0., 0., 0., 1., 0., 0., 4., 5.], dtype=np.float32))
 
+  def test_psend_precv_ring(self):
+    mesh = jtu.create_mesh((4,), ('i',))
+    x = jnp.arange(8., dtype=np.float32)
+
+    def f(x):
+      # This should have equivalent semantics to ppermute.
+      y = jax.lax.psend(x, 'i', perm=((0, 1), (1, 2), (2, 3)))
+      z = jax.lax.precv(y, 'i', perm=((0, 1), (1, 2), (2, 3)))
+      x = jax.lax.ppermute(x, 'i', perm=((3, 0),))
+      return z + x
+
+    s = NamedSharding(mesh, P("i"))
+    y = jax.jit(
+      shard_map(f, mesh=mesh, in_specs=P("i"), out_specs=P("i")),
+      in_shardings=s,
+      out_shardings=s,
+    ).lower(x).compile()  # Don't crash
+    print(y.as_text())
+    self.assertArraysEqual(y(x),
+        np.array([6., 7., 0., 1., 2., 3., 4., 5.], dtype=np.float32))
+
   def test_psend_precv_autodiff(self):
     mesh = jtu.create_mesh((4,), ('i',))
     x = jnp.arange(8., dtype=np.float32)
