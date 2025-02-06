@@ -5,6 +5,7 @@
 #     name = "xla",
 #     path = "/data/yunlongl/workspace/xla",
 # )
+load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
 git_repository(
     name = "xla",
     commit = "2b2a5e8e45ae40512cd4ab216c3984e28887a4a3",
