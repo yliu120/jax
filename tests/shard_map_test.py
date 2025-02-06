@@ -2563,6 +2563,45 @@ class ShardMapTest(jtu.JaxTestCase):
     self.assertArraysEqual(compiled(x),
         np.array([1., 1., 1., 1., 1., 1., 1., 1.], dtype=np.float32))
 
+  def test_psend_precv_pipelined_scan(self):
+    mesh = jtu.create_mesh((4,), ("i",))
+    k = jax.random.key(0)
+    # x = jnp.arange(8., dtype=np.float32)
+    # 4 GiB per device.
+    x = jax.random.normal(k, (2 ** 32,), jnp.float32)
+    full_perm = [(i, (i + 1) % 4) for i in range(4)]
+
+    def f(x, _):
+      sent = jax.lax.psend(x, x, axis_name="i", perm=full_perm)
+      recv = jax.lax.precv(sent, axis_name="i", perm=full_perm)
+      return recv, None
+
+    def g(x):
+      # Triggers the whole pipeline.
+      # For those not sending, this op is identity.
+      trigger = jax.lax.psend(x, None, axis_name="i", perm=(full_perm[-1],))
+      init = jax.lax.precv(trigger, axis_name="i", perm=full_perm)
+      out, _ = jax.lax.scan(f, init, length=3)
+      stage = jax.lax.axis_index("i")
+      out = jax.lax.psend(out, out, axis_name="i", perm=full_perm)
+      return jnp.where(stage == 0,
+                       jax.lax.precv(out, axis_name="i", perm=(full_perm[-1],)),
+                       out)
+
+    s = NamedSharding(mesh, P("i"))
+    y = jax.jit(
+      shard_map(g, mesh=mesh, in_specs=P("i"), out_specs=P("i")),
+      in_shardings=s,
+      out_shardings=s,
+    ).lower(x).compile()  # Don't crash
+    print(y.as_text())
+
+    with jax.profiler.trace("/tmp/tensorboard"):
+      jax.block_until_ready(y(x))
+    # fix numerics.
+    # self.assertArraysEqual(y(x),
+    #     np.array([0., 1., 2., 3., 4., 5., 6., 7.], dtype=np.float32))
+
   def test_psend_precv_partial_auto(self):
     mesh = jtu.create_mesh((4, 2), ("i", "j"))
     x = jnp.arange(8., dtype=np.float32).reshape(4, 2)
