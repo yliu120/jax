@@ -1768,3 +1768,99 @@ mlir.register_lowering(pgather_p, _pgather_parallel_lowering)
 # TODO: Transpose? That requires adding pscatter...
 batching.fancy_primitive_batchers[pgather_p] = _pgather_collective_batcher
 batching.skippable_batchers[pgather_p] = partial(_names_in_param, 'axes')
+
+def _psend_recv_lowering(ctx, x, schedule_after, *, axis_name, perm, call_target_name):
+  # TODO(yunlongl): Merges these logic with _ppermute_lowering.
+  replica_groups = _replica_groups(ctx.module_context.axis_env, axis_name, None)
+  group_size = len(replica_groups[0])
+  srcs, dsts = unzip2((src % group_size, dst % group_size) for src, dst in perm)
+  if not (len(srcs) == len(set(srcs)) and len(dsts) == len(set(dsts))):
+    msg = "psend/precv sources and destinations must be unique, got {}."
+    raise ValueError(msg.format(perm))
+
+  full_perm = np.zeros((len(replica_groups), len(perm), 2), np.int64)
+  for i, grp in enumerate(replica_groups):
+    grp = sorted(grp)
+    for j, (src, dst) in enumerate(perm):
+      full_perm[i, j, 0] = grp[src]
+      full_perm[i, j, 1] = grp[dst]
+  full_perm = full_perm.reshape((-1, 2))
+
+  backend_config = ir.DictAttr.get({
+    "perm": ir.DenseIntElementsAttr.get(full_perm, shape=full_perm.shape),
+  })
+  inputs = [x, schedule_after] if call_target_name == "xla.gpu.send" else [x]
+  return hlo.CustomCallOp(
+    result=[x.type],
+    inputs=inputs,
+    call_target_name=ir.StringAttr.get(call_target_name),
+    backend_config=backend_config,
+    api_version=ir.IntegerAttr.get(ir.IntegerType.get_signless(32), 4),
+  ).results
+
+
+def _psend_abstract_eval(x, schedule_after, *, axis_name, perm, **params):
+  _check_axis_names(axis_name)
+  return x
+
+
+def psend(x, schedule_after, axis_name=None, perm=None):
+  if schedule_after is None:
+    schedule_after = 0
+  if not isinstance(axis_name, (list, tuple)):
+    axis_name = (axis_name,)
+  return psend_p.bind(x, schedule_after, axis_name=axis_name, perm=tuple(map(tuple, perm)))
+
+
+def precv(schedule_after, axis_name, perm):
+  if not isinstance(axis_name, (list, tuple)):
+    axis_name = (axis_name,)
+  return precv_p.bind(schedule_after, axis_name=axis_name, perm=tuple(map(tuple, perm)))
+
+
+def _psend_transpose_rule(cts, x, schedule_after, perm, axis_name):
+  srcs, dsts = unzip2(perm)
+  inverse_perm = list(zip(dsts, srcs))
+  recv = precv_p.bind(cts, axis_name=axis_name, perm=inverse_perm)
+  # A hacky way for JAX to wire in the dependency.
+  return [recv, zeros_p.bind(recv)]
+
+
+def _precv_transpose_rule(cts, x, *, perm, axis_name):
+  srcs, dsts = unzip2(perm)
+  inverse_perm = list(zip(dsts, srcs))
+  return [psend_p.bind(cts, cts, axis_name=axis_name, perm=inverse_perm)]
+
+
+zeros_p = core.Primitive("zeros")
+zeros_p.def_abstract_eval(lambda x : x)
+
+
+def _zeros_lowering(ctx, x):
+  return hlo.CustomCallOp(
+    result=[x.type],
+    inputs=[x],
+    call_target_name=ir.StringAttr.get("xla.gpu.zeros"),
+    api_version=ir.IntegerAttr.get(ir.IntegerType.get_signless(32), 4),
+  ).results
+
+
+mlir.register_lowering(zeros_p, _zeros_lowering)
+
+
+psend_p = core.Primitive("send")
+psend_p.def_abstract_eval(_psend_abstract_eval)
+mlir.register_lowering(
+  psend_p, partial(_psend_recv_lowering, call_target_name="xla.gpu.send")
+)
+ad.deflinear2(psend_p, _psend_transpose_rule)
+
+
+precv_p = core.Primitive("recv")
+precv_p.def_abstract_eval(_raise_to_shaped_abstract_eval)
+mlir.register_lowering(
+  precv_p,
+  partial(_psend_recv_lowering,
+          schedule_after=None, call_target_name="xla.gpu.recv")
+)
+ad.deflinear2(precv_p, _precv_transpose_rule)

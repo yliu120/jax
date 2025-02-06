@@ -2196,6 +2196,21 @@ class ShardMapTest(jtu.JaxTestCase):
   #
   #   f(x)  # don't crash
 
+  def test_partial_auto_debug_print(self):
+    mesh = jtu.create_mesh((4, 2), ('i', 'j'))
+    x = jnp.arange(8.)
+
+    def g(x):
+      jax.debug.print('{}', x)
+
+    @jax.jit
+    def f(x):
+      return shard_map(g,
+                       mesh, in_specs=P('i'), out_specs=None,
+                       check_rep=False, auto=frozenset({'j'}))(x)
+
+    y = f(x)  # don't crash
+
   def test_partial_auto_of_random_keys(self):
     mesh = jtu.create_mesh((4, 2), ('i', 'j'))
     keys = jax.random.split(jax.random.key(0), 8)
@@ -2482,6 +2497,131 @@ class ShardMapTest(jtu.JaxTestCase):
               mesh=mesh, in_specs=P('i'), out_specs=P()
               )(x)  # don't crash
     self.assertArraysEqual(y, np.array([6, 7], dtype=np.float32))
+
+  def test_psend_precv(self):
+    mesh = jtu.create_mesh((4,), ('i',))
+    x = jnp.arange(8., dtype=np.float32)
+
+    def f(x):
+      # This should have equivalent semantics to ppermute.
+      y = jax.lax.psend(x, None, 'i', perm=((0, 1), (2, 3)))
+      z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
+      return z
+
+    s = NamedSharding(mesh, P("i"))
+    y = jax.jit(
+      shard_map(f, mesh=mesh, in_specs=P("i"), out_specs=P("i")),
+      in_shardings=s,
+      out_shardings=s,
+    ).lower(x).compile()  # Don't crash
+    self.assertArraysEqual(y(x),
+        np.array([0., 0., 0., 1., 0., 0., 4., 5.], dtype=np.float32))
+
+  def test_psend_precv_ring_scan(self):
+    mesh = jtu.create_mesh((4,), ('i',))
+    x = jnp.arange(8., dtype=np.float32)
+
+    def f(x, _):
+      # This should have equivalent semantics to ppermute which rotates
+      # the array to the right.
+      sent = jax.lax.psend(x, None, axis_name="i", perm=((0, 1), (2, 3)))
+      recved = jax.lax.precv(sent, axis_name="i", perm=((0, 1), (2, 3)))
+      sent_2 = jax.lax.psend(x, recved, axis_name="i", perm=((1, 2), (3, 0)))
+      recved_2 = jax.lax.precv(sent_2, axis_name="i", perm=((1, 2), (3, 0)))
+      return recved + recved_2, None
+
+    def g(x):
+      return jax.lax.scan(f, x, length=4)[0]
+
+    s = NamedSharding(mesh, P("i"))
+    y = jax.jit(
+      shard_map(g, mesh=mesh, in_specs=P("i"), out_specs=P("i")),
+      in_shardings=s,
+      out_shardings=s,
+    ).lower(x).compile()  # Don't crash
+    self.assertArraysEqual(y(x),
+        np.array([0., 1., 2., 3., 4., 5., 6., 7.], dtype=np.float32))
+
+  def test_psend_precv_ring_autodiff(self):
+    mesh = jtu.create_mesh((4,), ("i",))
+    x = jnp.arange(8.0, dtype=np.float32)
+
+    def f(x):
+      sent = jax.lax.psend(x, None, axis_name="i", perm=((0, 1), (2, 3)))
+      recved = jax.lax.precv(sent, axis_name="i", perm=((0, 1), (2, 3)))
+      sent_2 = jax.lax.psend(x, recved, axis_name="i", perm=((1, 2), (3, 0)))
+      recved_2 = jax.lax.precv(sent_2, axis_name="i", perm=((1, 2), (3, 0)))
+      return recved + recved_2
+
+    def g(x):
+      x = shard_map(f, mesh=mesh, in_specs=P("i"), out_specs=P("i"))(x)
+      return jnp.sum(x)
+
+    s = NamedSharding(mesh, P("i"))
+    lowered = jax.jit(jax.grad(g), in_shardings=s, out_shardings=s).lower(x)
+    compiled = lowered.compile()
+    self.assertArraysEqual(compiled(x),
+        np.array([1., 1., 1., 1., 1., 1., 1., 1.], dtype=np.float32))
+
+  def test_psend_precv_pipelined_scan(self):
+    mesh = jtu.create_mesh((4,), ("i",))
+    k = jax.random.key(0)
+    # x = jnp.arange(8., dtype=np.float32)
+    # 4 GiB per device.
+    x = jax.random.normal(k, (2 ** 32,), jnp.float32)
+    full_perm = [(i, (i + 1) % 4) for i in range(4)]
+
+    def f(x, _):
+      sent = jax.lax.psend(x, x, axis_name="i", perm=full_perm)
+      recv = jax.lax.precv(sent, axis_name="i", perm=full_perm)
+      return recv, None
+
+    def g(x):
+      # Triggers the whole pipeline.
+      # For those not sending, this op is identity.
+      trigger = jax.lax.psend(x, None, axis_name="i", perm=(full_perm[-1],))
+      init = jax.lax.precv(trigger, axis_name="i", perm=full_perm)
+      out, _ = jax.lax.scan(f, init, length=3)
+      stage = jax.lax.axis_index("i")
+      out = jax.lax.psend(out, out, axis_name="i", perm=full_perm)
+      return jnp.where(stage == 0,
+                       jax.lax.precv(out, axis_name="i", perm=(full_perm[-1],)),
+                       out)
+
+    s = NamedSharding(mesh, P("i"))
+    y = jax.jit(
+      shard_map(g, mesh=mesh, in_specs=P("i"), out_specs=P("i")),
+      in_shardings=s,
+      out_shardings=s,
+    ).lower(x).compile()  # Don't crash
+    print(y.as_text())
+
+    with jax.profiler.trace("/tmp/tensorboard"):
+      jax.block_until_ready(y(x))
+    # fix numerics.
+    # self.assertArraysEqual(y(x),
+    #     np.array([0., 1., 2., 3., 4., 5., 6., 7.], dtype=np.float32))
+
+  def test_psend_precv_partial_auto(self):
+    mesh = jtu.create_mesh((4, 2), ("i", "j"))
+    x = jnp.arange(8., dtype=np.float32).reshape(4, 2)
+
+    def f(x):
+      x = jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(None, "j")))
+      y = jax.lax.psend(x, None, "i", perm=((0, 1), (2, 3)))
+      z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
+      return z
+
+    s = NamedSharding(mesh, P("i", "j"))
+    y = jax.jit(
+        shard_map(f, mesh=mesh, in_specs=P("i"), out_specs=P("i"),
+            auto=frozenset({"j"})),
+        in_shardings=s,
+        out_shardings=s,
+      ).lower(x).compile()  # Don't crash
+    self.assertArraysEqual(y(x),
+        np.array([0., 0., 0., 1., 0., 0., 4., 5.],
+            dtype=np.float32).reshape(4, 2))
 
 
 class FunSpec(NamedTuple):
