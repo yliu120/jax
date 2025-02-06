@@ -2566,41 +2566,66 @@ class ShardMapTest(jtu.JaxTestCase):
   def test_psend_precv_pipelined_scan(self):
     mesh = jtu.create_mesh((4,), ("i",))
     k = jax.random.key(0)
-    # x = jnp.arange(8., dtype=np.float32)
     # 4 GiB per device.
     x = jax.random.normal(k, (2 ** 32,), jnp.float32)
     full_perm = [(i, (i + 1) % 4) for i in range(4)]
 
-    def f(x, _):
-      sent = jax.lax.psend(x, x, axis_name="i", perm=full_perm)
-      recv = jax.lax.precv(sent, axis_name="i", perm=full_perm)
-      return recv, None
+    def f(carry, _):
+      x, saved = carry
+      stage = jax.lax.axis_index("i")
+      recv = jax.lax.precv(saved, axis_name="i", perm=full_perm)
+      payload = jnp.where(stage == 3, recv, x)
+      sent = jax.lax.psend(payload, recv, axis_name="i", perm=full_perm)
+      return (recv, sent), None
 
     def g(x):
       # Triggers the whole pipeline.
       # For those not sending, this op is identity.
-      trigger = jax.lax.psend(x, None, axis_name="i", perm=(full_perm[-1],))
-      init = jax.lax.precv(trigger, axis_name="i", perm=full_perm)
-      out, _ = jax.lax.scan(f, init, length=3)
       stage = jax.lax.axis_index("i")
-      out = jax.lax.psend(out, out, axis_name="i", perm=full_perm)
-      return jnp.where(stage == 0,
-                       jax.lax.precv(out, axis_name="i", perm=(full_perm[-1],)),
-                       out)
+      # Pipeline prologue.
+      trigger = jax.lax.psend(x, None, axis_name="i", perm=(full_perm[-1],))
+      out, _ = jax.lax.scan(f, (x, trigger), length=3)
+      x, saved = out
+      # Pipeline epilogue.
+      recv = jax.lax.precv(saved, axis_name="i", perm=full_perm)
+      send = jax.lax.psend(x, recv, axis_name="i", perm=(full_perm[:-1]))
+      # Don't DCE send though there is no use.
+      return jnp.where(stage < 4, recv, send)
 
     s = NamedSharding(mesh, P("i"))
-    y = jax.jit(
-      shard_map(g, mesh=mesh, in_specs=P("i"), out_specs=P("i")),
-      in_shardings=s,
-      out_shardings=s,
-    ).lower(x).compile()  # Don't crash
-    print(y.as_text())
+    pipelined_y = (
+      jax.jit(
+        shard_map(g, mesh=mesh, in_specs=P("i"), out_specs=P("i")),
+        in_shardings=s,
+        out_shardings=s,
+      )
+      .lower(x)
+      .compile()
+    )
+
+    def ref_body(x, _):
+      x = jax.lax.ppermute(x, axis_name="i", perm=full_perm)
+      return x, None
+
+    def ref_g(x):
+      return jax.lax.scan(ref_body, x, length=4)[0]
+
+    ref_y = (
+      jax.jit(
+        shard_map(ref_g, mesh=mesh, in_specs=P("i"), out_specs=P("i")),
+        in_shardings=s,
+        out_shardings=s,
+      )
+      .lower(x)
+      .compile()
+    )
 
     with jax.profiler.trace("/tmp/tensorboard"):
-      jax.block_until_ready(y(x))
-    # fix numerics.
-    # self.assertArraysEqual(y(x),
-    #     np.array([0., 1., 2., 3., 4., 5., 6., 7.], dtype=np.float32))
+      re = pipelined_y(x)
+      ref_re = ref_y(x)
+      jax.block_until_ready((re, ref_re))
+
+    self.assertArraysEqual(re, ref_re)
 
   def test_psend_precv_partial_auto(self):
     mesh = jtu.create_mesh((4, 2), ("i", "j"))
