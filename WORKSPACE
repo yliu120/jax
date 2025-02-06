@@ -1,9 +1,14 @@
 # The XLA commit is determined by third_party/xla/workspace.bzl.
 # load("//third_party/xla:workspace.bzl", jax_xla_workspace = "repo")
 # jax_xla_workspace()
-local_repository(
+# local_repository(
+#     name = "xla",
+#     path = "/data/yunlongl/workspace/xla",
+# )
+git_repository(
     name = "xla",
-    path = "/data/yunlongl/workspace/xla",
+    commit = "2b2a5e8e45ae40512cd4ab216c3984e28887a4a3",
+    remote = "https://github.com/yliu120/xla.git",
 )
 
 # Initialize hermetic Python
