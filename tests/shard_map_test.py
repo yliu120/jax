@@ -2542,6 +2542,33 @@ class ShardMapTest(jtu.JaxTestCase):
     self.assertArraysEqual(y(x),
         np.array([0., 1., 2., 3., 4., 5., 6., 7.], dtype=np.float32))
 
+  def test_psend_precv_with_ppermute(self):
+    mesh = jtu.create_mesh((4,), ('i',))
+    x = jnp.arange(8., dtype=np.float32)
+
+    def f(x, _):
+      # This should have equivalent semantics to ppermute which rotates
+      # the array to the right.
+      sent = jax.lax.psend(x, None, axis_name="i", perm=((0, 1), (2, 3)))
+      recved = jax.lax.precv(sent, axis_name="i", perm=((0, 1), (2, 3)))
+      permuted = jax.lax.ppermute(x, axis_name="i", perm=((0, 1), (1, 2), (2, 3), (3, 0)))
+      sent_2 = jax.lax.psend(x, recved, axis_name="i", perm=((1, 2), (3, 0)))
+      recved_2 = jax.lax.precv(sent_2, axis_name="i", perm=((1, 2), (3, 0)))
+      return recved + recved_2 + permuted, None
+
+    def g(x):
+      return jax.lax.scan(f, x, length=4)[0]
+
+    s = NamedSharding(mesh, P("i"))
+    y = jax.jit(
+      shard_map(g, mesh=mesh, in_specs=P("i"), out_specs=P("i")),
+      in_shardings=s,
+      out_shardings=s,
+    ).lower(x).compile()  # Don't crash
+    print(y.as_text())
+    a = y(x)
+    jax.effects_barrier()
+
   def test_psend_precv_ring_autodiff(self):
     mesh = jtu.create_mesh((4,), ("i",))
     x = jnp.arange(8.0, dtype=np.float32)
