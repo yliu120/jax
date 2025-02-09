@@ -2499,13 +2499,15 @@ class ShardMapTest(jtu.JaxTestCase):
     self.assertArraysEqual(y, np.array([6, 7], dtype=np.float32))
 
   def test_psend_precv(self):
+    if not config.use_shardy_partitioner.value:
+      self.skipTest("Only has shardy partitioner support.")
     mesh = jtu.create_mesh((4,), ('i',))
     x = jnp.arange(8., dtype=np.float32)
 
     def f(x):
       # This should have equivalent semantics to ppermute.
       y = jax.lax.psend(x, None, 'i', perm=((0, 1), (2, 3)))
-      z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
+      z = jax.lax.precv(y, y, 'i', perm=((0, 1), (2, 3)))
       return z
 
     s = NamedSharding(mesh, P("i"))
@@ -2518,6 +2520,8 @@ class ShardMapTest(jtu.JaxTestCase):
         np.array([0., 0., 0., 1., 0., 0., 4., 5.], dtype=np.float32))
 
   def test_psend_precv_ring_scan(self):
+    if not config.use_shardy_partitioner.value:
+      self.skipTest("Only has shardy partitioner support.")
     mesh = jtu.create_mesh((4,), ('i',))
     x = jnp.arange(8., dtype=np.float32)
 
@@ -2525,9 +2529,9 @@ class ShardMapTest(jtu.JaxTestCase):
       # This should have equivalent semantics to ppermute which rotates
       # the array to the right.
       sent = jax.lax.psend(x, None, axis_name="i", perm=((0, 1), (2, 3)))
-      recved = jax.lax.precv(sent, axis_name="i", perm=((0, 1), (2, 3)))
+      recved = jax.lax.precv(sent, sent, axis_name="i", perm=((0, 1), (2, 3)))
       sent_2 = jax.lax.psend(x, recved, axis_name="i", perm=((1, 2), (3, 0)))
-      recved_2 = jax.lax.precv(sent_2, axis_name="i", perm=((1, 2), (3, 0)))
+      recved_2 = jax.lax.precv(sent_2, sent_2, axis_name="i", perm=((1, 2), (3, 0)))
       return recved + recved_2, None
 
     def g(x):
@@ -2543,6 +2547,8 @@ class ShardMapTest(jtu.JaxTestCase):
         np.array([0., 1., 2., 3., 4., 5., 6., 7.], dtype=np.float32))
 
   def test_psend_precv_with_ppermute(self):
+    if not config.use_shardy_partitioner.value:
+      self.skipTest("Only has shardy partitioner support.")
     mesh = jtu.create_mesh((4,), ('i',))
     x = jnp.arange(8., dtype=np.float32)
 
@@ -2550,10 +2556,10 @@ class ShardMapTest(jtu.JaxTestCase):
       # This should have equivalent semantics to ppermute which rotates
       # the array to the right.
       sent = jax.lax.psend(x, None, axis_name="i", perm=((0, 1), (2, 3)))
-      recved = jax.lax.precv(sent, axis_name="i", perm=((0, 1), (2, 3)))
+      recved = jax.lax.precv(sent, sent, axis_name="i", perm=((0, 1), (2, 3)))
       permuted = jax.lax.ppermute(x, axis_name="i", perm=((0, 1), (1, 2), (2, 3), (3, 0)))
       sent_2 = jax.lax.psend(x, recved, axis_name="i", perm=((1, 2), (3, 0)))
-      recved_2 = jax.lax.precv(sent_2, axis_name="i", perm=((1, 2), (3, 0)))
+      recved_2 = jax.lax.precv(sent_2, sent_2, axis_name="i", perm=((1, 2), (3, 0)))
       return recved + recved_2 + permuted, None
 
     def g(x):
@@ -2565,19 +2571,20 @@ class ShardMapTest(jtu.JaxTestCase):
       in_shardings=s,
       out_shardings=s,
     ).lower(x).compile()  # Don't crash
-    print(y.as_text())
     a = y(x)
     jax.effects_barrier()
 
   def test_psend_precv_ring_autodiff(self):
+    if not config.use_shardy_partitioner.value:
+      self.skipTest("Only has shardy partitioner support.")
     mesh = jtu.create_mesh((4,), ("i",))
     x = jnp.arange(8.0, dtype=np.float32)
 
     def f(x):
       sent = jax.lax.psend(x, None, axis_name="i", perm=((0, 1), (2, 3)))
-      recved = jax.lax.precv(sent, axis_name="i", perm=((0, 1), (2, 3)))
+      recved = jax.lax.precv(sent, sent, axis_name="i", perm=((0, 1), (2, 3)))
       sent_2 = jax.lax.psend(x, recved, axis_name="i", perm=((1, 2), (3, 0)))
-      recved_2 = jax.lax.precv(sent_2, axis_name="i", perm=((1, 2), (3, 0)))
+      recved_2 = jax.lax.precv(sent_2, sent_2, axis_name="i", perm=((1, 2), (3, 0)))
       return recved + recved_2
 
     def g(x):
@@ -2591,6 +2598,8 @@ class ShardMapTest(jtu.JaxTestCase):
         np.array([1., 1., 1., 1., 1., 1., 1., 1.], dtype=np.float32))
 
   def test_psend_precv_pipelined_scan(self):
+    if not config.use_shardy_partitioner.value:
+      self.skipTest("Only has shardy partitioner support.")
     mesh = jtu.create_mesh((4,), ("i",))
     k = jax.random.key(0)
     # 4 GiB per device.
@@ -2600,7 +2609,7 @@ class ShardMapTest(jtu.JaxTestCase):
     def f(carry, _):
       x, saved = carry
       stage = jax.lax.axis_index("i")
-      recv = jax.lax.precv(saved, axis_name="i", perm=full_perm)
+      recv = jax.lax.precv(saved, saved, axis_name="i", perm=full_perm)
       payload = jnp.where(stage == 3, recv, x)
       sent = jax.lax.psend(payload, recv, axis_name="i", perm=full_perm)
       return (recv, sent), None
@@ -2614,7 +2623,7 @@ class ShardMapTest(jtu.JaxTestCase):
       out, _ = jax.lax.scan(f, (x, trigger), length=3)
       x, saved = out
       # Pipeline epilogue.
-      recv = jax.lax.precv(saved, axis_name="i", perm=full_perm)
+      recv = jax.lax.precv(saved, saved, axis_name="i", perm=full_perm)
       send = jax.lax.psend(x, recv, axis_name="i", perm=(full_perm[:-1]))
       # Don't DCE send though there is no use.
       return jnp.where(stage < 4, recv, send)
@@ -2655,13 +2664,15 @@ class ShardMapTest(jtu.JaxTestCase):
     self.assertArraysEqual(re, ref_re)
 
   def test_psend_precv_partial_auto(self):
+    if not config.use_shardy_partitioner.value:
+      self.skipTest("Only has shardy partitioner support.")
     mesh = jtu.create_mesh((4, 2), ("i", "j"))
     x = jnp.arange(8., dtype=np.float32).reshape(4, 2)
 
     def f(x):
       x = jax.lax.with_sharding_constraint(x, NamedSharding(mesh, P(None, "j")))
       y = jax.lax.psend(x, None, "i", perm=((0, 1), (2, 3)))
-      z = jax.lax.precv(y, 'i', perm=((0, 1), (2, 3)))
+      z = jax.lax.precv(y, y, 'i', perm=((0, 1), (2, 3)))
       return z
 
     s = NamedSharding(mesh, P("i", "j"))

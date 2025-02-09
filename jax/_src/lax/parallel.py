@@ -40,6 +40,7 @@ from jax._src.lib.mlir import ir
 from jax._src.lib.mlir.dialects import hlo
 from jax._src.util import (canonicalize_axis, moveaxis, safe_map, safe_zip,
                            unzip2)
+from jax._src.custom_partitioning_sharding_rule import sdy_sharding_rule_to_mlir, str_to_sdy_sharding_rule
 import numpy as np
 
 unsafe_map, map = map, safe_map  # type: ignore
@@ -1769,6 +1770,36 @@ mlir.register_lowering(pgather_p, _pgather_parallel_lowering)
 batching.fancy_primitive_batchers[pgather_p] = _pgather_collective_batcher
 batching.skippable_batchers[pgather_p] = partial(_names_in_param, 'axes')
 
+# Wraps HLO's add_dependency instruction which is not in stablehlo.
+def _after_all_general_eval(x):
+  # Returns a boolean scalar shape as sdy doesn't support `!stablehlo.token`.
+  return core.shaped_abstractify(True)
+
+def _after_all_general_lowering(ctx, x):
+  aval_out, = ctx.avals_out
+  out = hlo.CustomCallOp(
+    result=[mlir.aval_to_ir_type(aval_out)],
+    inputs=[x],
+    call_target_name=ir.StringAttr.get("AfterAll"),
+    backend_config=ir.DictAttr.get({}),
+    api_version=ir.IntegerAttr.get(ir.IntegerType.get_signless(32), 4),
+  )
+  def _make_sharding_rule_str(avals_in):
+    aval_in, = avals_in
+    letters = [chr(ord("i") + i) for i in range(aval_in.ndim)]
+    if not letters:
+      return " -> "
+    joined = " ".join(letters)
+    return joined + " -> "
+  rule = str_to_sdy_sharding_rule(_make_sharding_rule_str(ctx.avals_in))
+  out.attributes['sdy.sharding_rule'] = sdy_sharding_rule_to_mlir(
+      rule, [x.type for x in out.operands], [out.results[0].type,])
+  return out.results
+
+after_all_general_p = core.Primitive("after_all_general")
+after_all_general_p.def_abstract_eval(_after_all_general_eval)
+mlir.register_lowering(after_all_general_p, _after_all_general_lowering)
+
 def _psend_recv_lowering(ctx, x, schedule_after, *, axis_name, perm, call_target_name):
   # TODO(yunlongl): Merges these logic with _ppermute_lowering.
   replica_groups = _replica_groups(ctx.module_context.axis_env, axis_name, None)
@@ -1789,78 +1820,72 @@ def _psend_recv_lowering(ctx, x, schedule_after, *, axis_name, perm, call_target
   backend_config = ir.DictAttr.get({
     "perm": ir.DenseIntElementsAttr.get(full_perm, shape=full_perm.shape),
   })
-  inputs = [x, schedule_after] if call_target_name == "xla.gpu.send" else [x]
-  return hlo.CustomCallOp(
+  out = hlo.CustomCallOp(
     result=[x.type],
-    inputs=inputs,
+    inputs=[x, schedule_after],
     call_target_name=ir.StringAttr.get(call_target_name),
     backend_config=backend_config,
     api_version=ir.IntegerAttr.get(ir.IntegerType.get_signless(32), 4),
-  ).results
+  )
+  rule = str_to_sdy_sharding_rule("...,  -> ...")
+  out.attributes['sdy.sharding_rule'] = sdy_sharding_rule_to_mlir(
+      rule, [x.type for x in out.operands], [out.results[0].type,])
+  return out.results
 
-
-def _psend_abstract_eval(x, schedule_after, *, axis_name, perm, **params):
+def _psend_precv_abstract_eval(x, schedule_after, *, axis_name, perm, **params):
   _check_axis_names(axis_name)
   return x
 
+def _canonicalize_schedule_after(schedule_after):
+  schedule_after = 0.0 if schedule_after is None else schedule_after
+  return after_all_general_p.bind(schedule_after)
 
 def psend(x, schedule_after, axis_name=None, perm=None):
-  if schedule_after is None:
-    schedule_after = 0
+  schedule_after = _canonicalize_schedule_after(schedule_after)
   if not isinstance(axis_name, (list, tuple)):
     axis_name = (axis_name,)
   return psend_p.bind(x, schedule_after, axis_name=axis_name, perm=tuple(map(tuple, perm)))
 
-
-def precv(schedule_after, axis_name, perm):
+def precv(x, schedule_after, axis_name, perm):
+  schedule_after = _canonicalize_schedule_after(schedule_after)
   if not isinstance(axis_name, (list, tuple)):
     axis_name = (axis_name,)
-  return precv_p.bind(schedule_after, axis_name=axis_name, perm=tuple(map(tuple, perm)))
+  return precv_p.bind(x, schedule_after, axis_name=axis_name, perm=tuple(map(tuple, perm)))
 
-
-def _psend_transpose_rule(cts, x, schedule_after, perm, axis_name):
+def _psend_precv_transpose_rule(cts, x, schedule_after, perm, axis_name, prim=None):
   srcs, dsts = unzip2(perm)
   inverse_perm = list(zip(dsts, srcs))
-  recv = precv_p.bind(cts, axis_name=axis_name, perm=inverse_perm)
+  out = prim.bind(cts, axis_name=axis_name, perm=inverse_perm)
   # A hacky way for JAX to wire in the dependency.
-  return [recv, zeros_p.bind(recv)]
-
-
-def _precv_transpose_rule(cts, x, *, perm, axis_name):
-  srcs, dsts = unzip2(perm)
-  inverse_perm = list(zip(dsts, srcs))
-  return [psend_p.bind(cts, cts, axis_name=axis_name, perm=inverse_perm)]
-
+  return [out, zeros_p.bind(out)]
 
 zeros_p = core.Primitive("zeros")
 zeros_p.def_abstract_eval(lambda x : x)
 
-
 def _zeros_lowering(ctx, x):
-  return hlo.CustomCallOp(
+  out = hlo.CustomCallOp(
     result=[x.type],
     inputs=[x],
     call_target_name=ir.StringAttr.get("xla.gpu.zeros"),
     api_version=ir.IntegerAttr.get(ir.IntegerType.get_signless(32), 4),
-  ).results
-
+  )
+  rule = str_to_sdy_sharding_rule("... -> ...")
+  out.attributes['sdy.sharding_rule'] = sdy_sharding_rule_to_mlir(
+      rule, [out.operands[0].type,], [out.results[0].type,])
+  return out.results
 
 mlir.register_lowering(zeros_p, _zeros_lowering)
 
-
 psend_p = core.Primitive("send")
-psend_p.def_abstract_eval(_psend_abstract_eval)
+psend_p.def_abstract_eval(_psend_precv_abstract_eval)
+precv_p = core.Primitive("recv")
+precv_p.def_abstract_eval(_psend_precv_abstract_eval)
 mlir.register_lowering(
   psend_p, partial(_psend_recv_lowering, call_target_name="xla.gpu.send")
 )
-ad.deflinear2(psend_p, _psend_transpose_rule)
-
-
-precv_p = core.Primitive("recv")
-precv_p.def_abstract_eval(_raise_to_shaped_abstract_eval)
 mlir.register_lowering(
   precv_p,
-  partial(_psend_recv_lowering,
-          schedule_after=None, call_target_name="xla.gpu.recv")
+  partial(_psend_recv_lowering, call_target_name="xla.gpu.recv")
 )
-ad.deflinear2(precv_p, _precv_transpose_rule)
+ad.deflinear2(psend_p, partial(_psend_precv_transpose_rule, prim=precv_p))
+ad.deflinear2(precv_p, partial(_psend_precv_transpose_rule, prim=psend_p))

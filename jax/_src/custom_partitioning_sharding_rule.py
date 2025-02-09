@@ -340,6 +340,8 @@ def sdy_sharding_rule_to_mlir(
       return f"{i}th operand"
 
   def get_rank_for_value(i):
+    if str(types[i]) == "!stablehlo.token":
+      return 0
     return ir.ShapedType(types[i]).rank
 
   def get_size_for_value_dim(i, j):
