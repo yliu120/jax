@@ -346,6 +346,7 @@ from jax._src.lax.fft import (
   FftType as FftType,
 )
 from jax._src.lax.parallel import (
+  after_all_general_p as after_all_general_p,
   all_gather as all_gather,
   all_gather_p as all_gather_p,
   all_to_all as all_to_all,

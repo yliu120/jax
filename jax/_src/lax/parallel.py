@@ -1826,6 +1826,7 @@ def _psend_recv_lowering(ctx, x, schedule_after, *, axis_name, perm, call_target
     call_target_name=ir.StringAttr.get(call_target_name),
     backend_config=backend_config,
     api_version=ir.IntegerAttr.get(ir.IntegerType.get_signless(32), 4),
+    has_side_effect=(call_target_name == "xla.gpu.send"),
   )
   rule = str_to_sdy_sharding_rule("...,  -> ...")
   out.attributes['sdy.sharding_rule'] = sdy_sharding_rule_to_mlir(
