@@ -346,6 +346,7 @@ from jax._src.lax.fft import (
   FftType as FftType,
 )
 from jax._src.lax.parallel import (
+  after_all_general_p as after_all_general_p,
   all_gather as all_gather,
   all_gather_p as all_gather_p,
   all_to_all as all_to_all,
@@ -360,6 +361,10 @@ from jax._src.lax.parallel import (
   pmin_p as pmin_p,
   ppermute as ppermute,
   ppermute_p as ppermute_p,
+  psend as psend,
+  psend_p as psend_p,
+  precv as precv,
+  precv_p as precv_p,
   pshuffle as pshuffle,
   psum as psum,
   psum_p as psum_p,
