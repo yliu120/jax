@@ -27,6 +27,7 @@ from jax._src import core
 from jax._src import config
 from jax._src import dispatch
 from jax._src import dtypes
+from jax._src import effects
 from jax._src.sharding_impls import (SPMDAxisContext, ShardingContext,
                                      NamedSharding, PartitionSpec as P)
 from jax._src.core import AxisName, ShapedArray
@@ -1800,7 +1801,8 @@ after_all_general_p = core.Primitive("after_all_general")
 after_all_general_p.def_abstract_eval(_after_all_general_eval)
 mlir.register_lowering(after_all_general_p, _after_all_general_lowering)
 
-def _psend_recv_lowering(ctx, x, schedule_after, *, axis_name, perm, call_target_name):
+def _psend_recv_lowering(ctx, x, schedule_after, effect, *, axis_name, perm, call_target_name):
+  del effect
   # TODO(yunlongl): Merges these logic with _ppermute_lowering.
   replica_groups = _replica_groups(ctx.module_context.axis_env, axis_name, None)
   group_size = len(replica_groups[0])
@@ -1833,9 +1835,18 @@ def _psend_recv_lowering(ctx, x, schedule_after, *, axis_name, perm, call_target
       rule, [x.type for x in out.operands], [out.results[0].type,])
   return out.results
 
-def _psend_precv_abstract_eval(x, schedule_after, *, axis_name, perm, **params):
+class SendRecvEffect(effects.Effect):
+  __str__ = lambda self: "Send"
+send_recv_effect = SendRecvEffect()
+
+effects.lowerable_effects.add_type(SendRecvEffect)
+effects.control_flow_allowed_effects.add_type(SendRecvEffect)
+effects.remat_allowed_effects.add_type(SendRecvEffect)
+effects.custom_derivatives_allowed_effects.add_type(SendRecvEffect)
+
+def _psend_precv_abstract_eval(x, schedule_after, effect, *, axis_name, perm, **params):
   _check_axis_names(axis_name)
-  return x
+  return x, {effect}
 
 def _canonicalize_schedule_after(schedule_after):
   schedule_after = 0.0 if schedule_after is None else schedule_after
@@ -1845,13 +1856,15 @@ def psend(x, schedule_after, axis_name=None, perm=None):
   schedule_after = _canonicalize_schedule_after(schedule_after)
   if not isinstance(axis_name, (list, tuple)):
     axis_name = (axis_name,)
-  return psend_p.bind(x, schedule_after, axis_name=axis_name, perm=tuple(map(tuple, perm)))
+  return psend_p.bind(x, schedule_after, effect=send_recv_effect,
+                      axis_name=axis_name, perm=tuple(map(tuple, perm)))
 
 def precv(x, schedule_after, axis_name, perm):
   schedule_after = _canonicalize_schedule_after(schedule_after)
   if not isinstance(axis_name, (list, tuple)):
     axis_name = (axis_name,)
-  return precv_p.bind(x, schedule_after, axis_name=axis_name, perm=tuple(map(tuple, perm)))
+  return precv_p.bind(x, schedule_after, effect=send_recv_effect,
+                      axis_name=axis_name, perm=tuple(map(tuple, perm)))
 
 def _psend_precv_transpose_rule(cts, x, schedule_after, perm, axis_name, prim=None):
   srcs, dsts = unzip2(perm)
@@ -1878,9 +1891,9 @@ def _zeros_lowering(ctx, x):
 mlir.register_lowering(zeros_p, _zeros_lowering)
 
 psend_p = core.Primitive("send")
-psend_p.def_abstract_eval(_psend_precv_abstract_eval)
+psend_p.def_effectful_abstract_eval(_psend_precv_abstract_eval)
 precv_p = core.Primitive("recv")
-precv_p.def_abstract_eval(_psend_precv_abstract_eval)
+precv_p.def_effectful_abstract_eval(_psend_precv_abstract_eval)
 mlir.register_lowering(
   psend_p, partial(_psend_recv_lowering, call_target_name="xla.gpu.send")
 )
