@@ -84,6 +84,7 @@ def _get_version_for_build() -> str:
   """
   if _release_version is not None:
     return _release_version
+  print(_version)
   if os.getenv("WHEEL_VERSION_SUFFIX"):
     return _version + os.getenv("WHEEL_VERSION_SUFFIX", "")
   if os.getenv("JAX_RELEASE") or os.getenv("JAXLIB_RELEASE"):
