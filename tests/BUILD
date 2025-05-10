@@ -1684,6 +1684,12 @@ jax_multiplatform_test(
     },
 )
 
+jax_multiplatform_test(
+    name = "pipeline_test",
+    srcs = ["pipeline_test.py"],
+    enable_backends = ["gpu"],
+)
+
 jax_py_test(
     name = "custom_partitioning_sharding_rule_test",
     srcs = ["custom_partitioning_sharding_rule_test.py"],
