@@ -2165,6 +2165,7 @@ jax_multiplatform_test(
     tags = ["multiaccelerator"],
     deps = [
         "//jax:test_multiprocess",
+        "//jax:experimental",
     ] + py_deps([
         "portpicker",
         "absl/testing",
