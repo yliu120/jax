@@ -2153,6 +2153,25 @@ jax_multiplatform_test(
     ]),
 )
 
+jax_multiplatform_test(
+    name = "jit_cache_test",
+    srcs = ["jit_cache_test.py"],
+    args = [
+        "--num_processes=4",
+        "--gpus_per_process=1",
+    ],
+    enable_backends = [],
+    enable_configs = ["gpu_h100x4"],
+    tags = ["multiaccelerator"],
+    deps = [
+        "//jax:test_multiprocess",
+    ] + py_deps([
+        "portpicker",
+        "absl/testing",
+        "numpy",
+    ]),
+)
+
 jax_py_test(
     name = "custom_partitioning_sharding_rule_test",
     srcs = ["custom_partitioning_sharding_rule_test.py"],
