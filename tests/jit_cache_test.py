@@ -28,7 +28,7 @@ partial = functools.partial
 
 class JitCacheTest(jt_multiprocess.MultiProcessTest):
 
-  def test_basic_remote_dma(self):
+  def test_jit_cache(self):
     jax.config.update("jax_compilation_cache_dir", "/tmp/compilation_cache")
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 
