@@ -46,6 +46,16 @@ class JitCacheTest(jt_multiprocess.MultiProcessTest):
         np.arange(1) * jax.process_index(), mesh, in_out_sharding.spec)
     jax.block_until_ready(f(inp))
 
+  def test_jit_cache_inline(self):
+    jax.config.update("jax_compilation_cache_dir", "/tmp/compilation_cache")
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+
+    mesh = jax.make_mesh((4,), ('x'))
+    in_out_sharding = jax.sharding.NamedSharding(mesh, P('x'))
+    f = jax.jit(lambda x: x, in_shardings=(in_out_sharding,), out_shardings=in_out_sharding)
+    input_data_gen = jax.jit(lambda: jnp.arange(4), out_shardings=in_out_sharding)
+    jax.block_until_ready(f(input_data_gen()))
+
   def test_aot_route(self):
     def fun(x):
       return x * x
