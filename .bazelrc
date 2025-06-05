@@ -1,6 +1,10 @@
 # #############################################################################
 # All default build options below. These apply to all build commands.
 # #############################################################################
+startup --output_user_root=/local/bazel_user_root
+
+common --experimental_disk_cache_gc_max_size=20G
+
 # TODO: Enable Bzlmod
 common --noenable_bzlmod
 

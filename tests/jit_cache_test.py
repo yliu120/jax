@@ -24,6 +24,9 @@ from jax.experimental.serialize_executable import (
     deserialize_and_load,
     serialize,
 )
+from jax.experimental.multihost_utils import host_local_array_to_global_array
+
+import numpy as np
 
 
 P = jax.sharding.PartitionSpec
@@ -39,7 +42,9 @@ class JitCacheTest(jt_multiprocess.MultiProcessTest):
     mesh = jax.make_mesh((4,), ('x'))
     in_out_sharding = jax.sharding.NamedSharding(mesh, P('x'))
     f = jax.jit(lambda x: x, in_shardings=(in_out_sharding,), out_shardings=in_out_sharding)
-    jax.block_until_ready(f(jnp.arange(4)))
+    inp = host_local_array_to_global_array(
+        np.arange(1) * jax.process_index(), mesh, in_out_sharding.spec)
+    jax.block_until_ready(f(inp))
 
   def test_aot_route(self):
     def fun(x):
@@ -55,9 +60,15 @@ class JitCacheTest(jt_multiprocess.MultiProcessTest):
       serialized, in_tree, out_tree = serialize(lowered.compile())
       compiled = deserialize_and_load(serialized, in_tree, out_tree)
       self.assertEqual(compiled.as_text(), lowered.compile().as_text())
-      jax.block_until_ready(compiled(jnp.arange(64, dtype=jnp.float32).reshape(8, 8)))
+      return compiled
+    
+    compiled = verify_serialization(lowered)
+    global_inp_data = np.arange(64, dtype=jnp.float32).reshape(8, 8)
 
-    verify_serialization(lowered)
+    def cb(index):
+      return global_inp_data[index]
+    inp = jax.make_array_from_callback((8, 8), in_out_sharding, cb)
+    jax.block_until_ready(compiled(inp))
 
 
 if __name__ == '__main__':
