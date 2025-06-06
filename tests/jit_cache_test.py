@@ -35,6 +35,18 @@ partial = functools.partial
 
 class JitCacheTest(jt_multiprocess.MultiProcessTest):
 
+  def test_jit_cache_in_context_mesh(self):
+    jax.config.update("jax_compilation_cache_dir",
+                      "/tmp/compilation_cache/" + str(jax.process_index()))
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+
+    mesh = jax.make_mesh((4,), ('x'))
+    in_out_sharding = jax.sharding.NamedSharding(mesh, P('x'))
+    f = jax.jit(lambda x: x, in_shardings=(in_out_sharding,), out_shardings=in_out_sharding)
+    with mesh:
+      inp = jnp.arange(4)
+      jax.block_until_ready(f(inp))
+
   def test_jit_cache(self):
     jax.config.update("jax_compilation_cache_dir", "/tmp/compilation_cache")
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
